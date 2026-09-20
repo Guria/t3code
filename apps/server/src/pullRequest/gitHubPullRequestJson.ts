@@ -2,6 +2,7 @@ import * as Cause from "effect/Cause";
 import * as Exit from "effect/Exit";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import { TrimmedNonEmptyString } from "@t3tools/contracts";
 import type {
   PullRequestStackMembership,
   PullRequestActor,
@@ -2616,6 +2617,32 @@ export interface GitHubViewerAccess {
    * something to update" at once. Absent where the comparison was not read.
    */
   readonly canUpdateBranch?: boolean;
+}
+
+/**
+ * GitHub App installation tokens are valid API credentials, but REST `/user` refuses them.
+ * GraphQL still answers with the installation's bot identity, so it is the one viewer probe that
+ * works for both personal credentials and App credentials.
+ */
+export const VIEWER_IDENTITY_GRAPHQL_QUERY = `query {
+  viewer { id login }
+}`;
+
+const RawViewerIdentitySchema = Schema.Struct({
+  data: Schema.Struct({
+    viewer: Schema.Struct({
+      id: TrimmedNonEmptyString,
+      login: TrimmedNonEmptyString,
+    }),
+  }),
+});
+
+const decodeViewerIdentity = decodeJsonResult(RawViewerIdentitySchema);
+
+export function decodeViewerIdentityJson(
+  raw: string,
+): Result.Result<Schema.Schema.Type<typeof RawViewerIdentitySchema>, DecodeFailure> {
+  return decodeViewerIdentity(raw);
 }
 
 /** Core detail and write checks share one read of permissions and merge settings. */

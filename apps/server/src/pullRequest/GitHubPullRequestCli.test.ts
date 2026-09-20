@@ -240,7 +240,8 @@ it.effect(
             Effect.sync(() => {
               commands.push(input);
               if (input.args[0] === "auth") return output(activeToken);
-              if (input.args[0] === "api") return output('{"id":123,"login":"same-account"}');
+              if (input.args[0] === "api")
+                return output('{"data":{"viewer":{"id":"identity-123","login":"same-account"}}}');
               return output("");
             }),
         }),
@@ -279,7 +280,7 @@ it.effect(
           .map((command) => command.env?.GH_TOKEN),
       ).toEqual(["broad-credential", "restricted-credential"]);
       expect(yield* cli.getRoutingIdentity(input)).toEqual({
-        accountId: "123",
+        accountId: "identity-123",
         viewer: "same-account",
       });
     }),
@@ -403,7 +404,9 @@ layer("GitHubPullRequestCli.layer", (it) => {
       mockedExecute.mockImplementation((input) =>
         input.args[0] === "auth"
           ? Effect.succeed(output("shared-credential"))
-          : Effect.yieldNow.pipe(Effect.as(output('{"id":123,"login":"viewer"}'))),
+          : Effect.yieldNow.pipe(
+              Effect.as(output('{"data":{"viewer":{"id":"identity-123","login":"viewer"}}}')),
+            ),
       );
       const cli = yield* GitHubPullRequestCli.GitHubPullRequestCli;
       const results = yield* Effect.all(
@@ -413,7 +416,7 @@ layer("GitHubPullRequestCli.layer", (it) => {
         { concurrency: 4 },
       );
       expect(results).toEqual(
-        Array.from({ length: 4 }, () => ({ accountId: "123", viewer: "viewer" })),
+        Array.from({ length: 4 }, () => ({ accountId: "identity-123", viewer: "viewer" })),
       );
       expect(mockedExecute.mock.calls.filter(([input]) => input.args[0] === "api")).toHaveLength(1);
     }),
@@ -437,7 +440,7 @@ layer("GitHubPullRequestCli.layer", (it) => {
               yield* Deferred.succeed(firstStarted, undefined);
               return yield* Effect.never;
             }
-            return output('{"id":123,"login":"viewer"}');
+            return output('{"data":{"viewer":{"id":"identity-123","login":"viewer"}}}');
           }),
         );
         const cli = yield* GitHubPullRequestCli.GitHubPullRequestCli;
@@ -447,7 +450,7 @@ layer("GitHubPullRequestCli.layer", (it) => {
         const second = yield* cli.getRoutingIdentity(input).pipe(Effect.forkChild);
         yield* Deferred.await(secondStarted);
         yield* Fiber.interrupt(first);
-        expect(yield* Fiber.join(second)).toEqual({ accountId: "123", viewer: "viewer" });
+        expect(yield* Fiber.join(second)).toEqual({ accountId: "identity-123", viewer: "viewer" });
         expect(verifications).toBe(2);
       }),
   );
@@ -2769,14 +2772,51 @@ layer("GitHubPullRequestCli.layer", (it) => {
     Effect.gen(function* () {
       mockedExecute
         .mockReturnValueOnce(Effect.succeed(output("enterprise-test-credential")))
-        .mockReturnValueOnce(Effect.succeed(output('{"id":456,"login":"enterprise-user"}')));
+        .mockReturnValueOnce(
+          Effect.succeed(
+            output('{"data":{"viewer":{"id":"identity-456","login":"enterprise-user"}}}'),
+          ),
+        );
       const cli = yield* GitHubPullRequestCli.GitHubPullRequestCli;
 
       const login = yield* cli.getViewerLogin({ cwd: "/w", host: "github.acme.com" });
 
       expect(login).toBe("enterprise-user");
       expect(callAt(0).args).toEqual(["auth", "token", "--hostname", "github.acme.com"]);
-      expect(callAt(1).args).toEqual(["api", "user", "--hostname", "github.acme.com"]);
+      expect(callAt(1).args).toEqual([
+        "api",
+        "graphql",
+        "--hostname",
+        "github.acme.com",
+        "-f",
+        expect.stringContaining("viewer { id login }"),
+      ]);
+    }),
+  );
+
+  it.effect("identifies an App installation credential through GraphQL", () =>
+    Effect.gen(function* () {
+      mockedExecute
+        .mockReturnValueOnce(Effect.succeed(output("ghs_test-installation-credential")))
+        .mockReturnValueOnce(
+          Effect.succeed(
+            output('{"data":{"viewer":{"id":"BOT_kgDOExLJXQ","login":"example-bot[bot]"}}}'),
+          ),
+        );
+      const cli = yield* GitHubPullRequestCli.GitHubPullRequestCli;
+
+      expect(yield* cli.getRoutingIdentity({ cwd: "/w", host: "github.com" })).toEqual({
+        accountId: "BOT_kgDOExLJXQ",
+        viewer: "example-bot[bot]",
+      });
+      expect(callAt(1).args).toEqual([
+        "api",
+        "graphql",
+        "--hostname",
+        "github.com",
+        "-f",
+        expect.stringContaining("viewer { id login }"),
+      ]);
     }),
   );
 
@@ -2786,9 +2826,11 @@ layer("GitHubPullRequestCli.layer", (it) => {
       const input = { cwd: "/w", host: "github.identity-cache.test" };
       mockedExecute
         .mockReturnValueOnce(Effect.succeed(output("test-credential-a")))
-        .mockReturnValueOnce(Effect.succeed(output('{"id":123,"login":"maria-rcks"}')));
+        .mockReturnValueOnce(
+          Effect.succeed(output('{"data":{"viewer":{"id":"identity-123","login":"maria-rcks"}}}')),
+        );
       expect(yield* cli.getRoutingIdentity(input)).toEqual({
-        accountId: "123",
+        accountId: "identity-123",
         viewer: "maria-rcks",
       });
       expect(callAt(1).env).toMatchObject({
@@ -2798,7 +2840,7 @@ layer("GitHubPullRequestCli.layer", (it) => {
 
       mockedExecute.mockReturnValueOnce(Effect.succeed(output("test-credential-a")));
       expect(yield* cli.getRoutingIdentity(input)).toEqual({
-        accountId: "123",
+        accountId: "identity-123",
         viewer: "maria-rcks",
       });
       expect(mockedExecute).toHaveBeenCalledTimes(3);
@@ -2824,9 +2866,11 @@ layer("GitHubPullRequestCli.layer", (it) => {
 
       mockedExecute
         .mockReturnValueOnce(Effect.succeed(output("test-credential-b")))
-        .mockReturnValueOnce(Effect.succeed(output('{"id":456,"login":"maria-rcks"}')));
+        .mockReturnValueOnce(
+          Effect.succeed(output('{"data":{"viewer":{"id":"identity-456","login":"maria-rcks"}}}')),
+        );
       expect(yield* cli.getRoutingIdentity(input)).toEqual({
-        accountId: "456",
+        accountId: "identity-456",
         viewer: "maria-rcks",
       });
     }),
