@@ -4,6 +4,7 @@ import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as NodeCrypto from "node:crypto";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 import { ChildProcessSpawner } from "effect/unstable/process";
@@ -2817,6 +2818,41 @@ layer("GitHubPullRequestCli.layer", (it) => {
         "-f",
         expect.stringContaining("viewer { id login }"),
       ]);
+    }),
+  );
+
+  it.effect("preserves a paused GraphQL budget while verifying a credential", () =>
+    Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis;
+      const budget = yield* GitHubGraphQlBudget.GitHubGraphQlBudget;
+      const token = "ghs_paused-credential";
+      const scope = `github.com:${NodeCrypto.createHash("sha256").update(token).digest("hex")}`;
+      yield* budget
+        .observe(
+          "github.com",
+          encodeJson({
+            data: {
+              rateLimit: {
+                cost: 1,
+                limit: 5_000,
+                remaining: 500,
+                resetAt: "2099-08-13T14:00:00Z",
+              },
+            },
+          }),
+        )
+        .pipe(Effect.provideService(SourceControlRateLimit.CredentialScope, scope));
+      mockedExecute.mockImplementation((input) => {
+        expect(input.args[0]).toBe("auth");
+        return Effect.succeed(output(token));
+      });
+      const cli = yield* GitHubPullRequestCli.GitHubPullRequestCli;
+
+      const error = yield* Effect.flip(cli.getRoutingIdentity({ cwd: "/w", host: "github.com" }));
+
+      expect(error._tag).toBe("SourceControlRateLimitPausedError");
+      expect(mockedExecute).toHaveBeenCalledTimes(1);
+      yield* TestClock.setTime(now);
     }),
   );
 
