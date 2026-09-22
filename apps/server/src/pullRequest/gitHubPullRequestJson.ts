@@ -2,6 +2,7 @@ import * as Cause from "effect/Cause";
 import * as Exit from "effect/Exit";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import * as SchemaIssue from "effect/SchemaIssue";
 import { TrimmedNonEmptyString } from "@t3tools/contracts";
 import type {
   PullRequestStackMembership,
@@ -2642,7 +2643,22 @@ const decodeViewerIdentity = decodeJsonResult(RawViewerIdentitySchema);
 export function decodeViewerIdentityJson(
   raw: string,
 ): Result.Result<Schema.Schema.Type<typeof RawViewerIdentitySchema>, DecodeFailure> {
-  return decodeViewerIdentity(raw);
+  const decoded = decodeViewerIdentity(raw);
+  if (!Result.isSuccess(decoded)) return decoded;
+  // GraphQL can return a usable `data` object alongside execution errors. Schema's struct
+  // decoder ignores unknown envelope fields, so inspect the original response explicitly:
+  // a partially answered identity must not be cached as a verified credential.
+  const envelope: unknown = JSON.parse(raw);
+  if (typeof envelope === "object" && envelope !== null && Object.hasOwn(envelope, "errors")) {
+    return Result.fail(
+      Cause.fail(
+        new Schema.SchemaError(
+          new SchemaIssue.InvalidValue({ message: "GraphQL response includes errors." }),
+        ),
+      ),
+    );
+  }
+  return decoded;
 }
 
 /** Core detail and write checks share one read of permissions and merge settings. */
