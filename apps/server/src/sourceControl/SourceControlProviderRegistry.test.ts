@@ -181,6 +181,65 @@ it.effect("includes the request cwd when an unregistered provider is used", () =
   }),
 );
 
+it.effect.each([
+  {
+    kind: "unknown",
+    prefix: "Source control operation",
+    detail: "Could not detect the source control provider for this project.",
+  },
+  {
+    kind: "custom-host",
+    prefix: "Source control provider custom-host failed in",
+    detail: "No custom-host source control provider is registered.",
+  },
+])("explains fallback operation failures for $kind", (scenario) =>
+  Effect.gen(function* () {
+    const registry = yield* makeRegistry({ remotes: [] });
+    const cwd = "/repo";
+    const provider = yield* scenario.kind === "unknown"
+      ? registry.resolve({ cwd })
+      : registry.get(SourceControlProviderKind.make(scenario.kind));
+    const errors = {
+      listChangeRequests: provider
+        .listChangeRequests({ cwd, headSelector: "feature", state: "open" })
+        .pipe(Effect.flip),
+      getChangeRequest: provider.getChangeRequest({ cwd, reference: "#42" }).pipe(Effect.flip),
+      createChangeRequest: provider
+        .createChangeRequest({
+          cwd,
+          baseRefName: "main",
+          headSelector: "feature",
+          title: "A change",
+          bodyFile: "/tmp/change-request.md",
+        })
+        .pipe(Effect.flip),
+      getRepositoryCloneUrls: provider
+        .getRepositoryCloneUrls({ cwd, repository: "team/project" })
+        .pipe(Effect.flip),
+      createRepository: provider
+        .createRepository({ cwd, repository: "team/project", visibility: "private" })
+        .pipe(Effect.flip),
+      getDefaultBranch: provider.getDefaultBranch({ cwd }).pipe(Effect.flip),
+      checkoutChangeRequest: provider
+        .checkoutChangeRequest({ cwd, reference: "#42" })
+        .pipe(Effect.flip),
+    };
+
+    for (const [operation, failure] of Object.entries(errors)) {
+      const error = yield* failure;
+
+      assert.strictEqual(error.provider, scenario.kind);
+      assert.strictEqual(error.operation, operation);
+      assert.strictEqual(error.cwd, cwd);
+      assert.strictEqual(error.detail, scenario.detail);
+      assert.isTrue(error.message.startsWith(scenario.prefix));
+      assert.include(error.message, operation);
+      assert.include(error.message, scenario.detail);
+      assert.notInclude(error.message, "provider unknown");
+    }
+  }),
+);
+
 it.effect("retains VCS detection failures with structured cwd context", () =>
   Effect.gen(function* () {
     const cause = new VcsRepositoryDetectionError({
